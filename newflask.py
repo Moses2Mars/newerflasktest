@@ -9,6 +9,8 @@ import docx2txt
 import pdfplumber
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import CountVectorizer
 import string
 import spacy
 nlp = spacy.load("en_core_web_sm")
@@ -42,13 +44,14 @@ async def form_example():
         cleaned_resume = cleanString(resume)
         cleaned_job_description = cleanString(job_description)
 
+        wordMatch = checkWordMatchScore(cleaned_resume, cleaned_job_description)
         #save them both as docx files
         buildDocxFile(cleaned_resume, "resume.docx")
         buildDocxFile(cleaned_job_description, 'job_description.docx')
 
         #parse and math the resume with the job description
-        data = parseAndMatchResume("resume.docx","job_description.docx", "profile.pdf")
-        print(data)
+        data = parseAndMatchResume("resume.docx","job_description.docx", wordMatch)
+
         return data
 
 def readFromPDF(file): 
@@ -63,11 +66,12 @@ def buildDocxFile(data, filePath):
     p = document.add_paragraph(data)
     document.save(filePath)
 
-def parseAndMatchResume(resumePath, jobPath, fileName):
+def parseAndMatchResume(resumePath, jobPath, wordMatch):
     rawResultsResume, rawResultsJob = getResults(resumePath, jobPath)
-    rawResultsResume["scores"] = calculatePoints(rawResultsResume, rawResultsJob, fileName)
+    rawResultsResume["scores"] = calculatePoints(rawResultsResume, rawResultsJob, wordMatch)
     rawResultsResume["matchScore"] = calculateMatch(rawResultsResume["scores"])
-    finalResults = finalArrangeData(rawResultsResume, fileName)
+
+    finalResults = finalArrangeData(rawResultsResume)
     return finalResults
 
 def getResults(resume_path, job_description_path):
@@ -88,14 +92,33 @@ def getResults(resume_path, job_description_path):
 
     return resumeData, jobData
 
-def calculatePoints(resumeData, jobData, fileName):
+def calculatePoints(resumeData, jobData, wordMatch):
     skills = checkSkillsScore(resumeData["skills"], jobData["skills"])
     data = {
         "skills": skills,
-        "ats": calcAtsScore(resumeData, fileName, skills),
-        "rfindings": checkRecruiterScore(resumeData)
+        "wordMatch": wordMatch,
     }
     return data
+
+def checkWordMatchScore(resume_text, job_description_text):
+    #making a list of both the resume and job description
+    text_list = [resume_text, job_description_text]
+
+    # Convert a collection of text documents to a matrix of token counts 
+    cv = CountVectorizer()
+    count_matrix = cv.fit_transform(text_list)
+
+    # Cosine similarity is a metric used to measure how similar the documents are irrespective of their size. 
+    # Mathematically, it measures the cosine of the angle between two vectors projected in a multi-dimensional space. 
+    # The cosine similarity is advantageous because even if the two similar documents are far apart by the Euclidean distance 
+    # (due to the size of the document), chances are they may still be oriented closer together. 
+    # The smaller the angle, the higher the cosine similarity.
+    matchPercentage = cosine_similarity(count_matrix)[0][1] * 100
+
+    # round to two decimal
+    matchPercentage = round(matchPercentage, 2) 
+
+    return matchPercentage
 
 def checkSkillsScore(resumeSkills, JobSkills):
     resumeSkills = [skill.lower() for skill in resumeSkills]
@@ -108,111 +131,37 @@ def checkSkillsScore(resumeSkills, JobSkills):
     return {"exists": eScore, "not-exists" : len(JobSkills) - eScore, "total" : len(JobSkills)}
 
 def calculateMatch(score):
-    skillsMatchScore = (score["skills"]["exists"] / score["skills"]["total"]) * 0.5
-    atsMatchScore = (score["ats"]["exists"] / score["ats"]["total"]) * 0.25
-    rfindingsScore = (score["rfindings"]["exists"] / score["rfindings"]["total"]) * 0.25
-    totalScore = skillsMatchScore + atsMatchScore + rfindingsScore
+    skillsMatchScore = score["skills"]["exists"] / score["skills"]["total"] * 1.3
+    wordsMatchScore = score["wordMatch"] / 100
+
+    print('skills', skillsMatchScore)
+    print('words', wordsMatchScore)
+    # if copy pasted the job description
+    if wordsMatchScore >= 1:
+        wordsMatchScore = 0.1
+    else: 
+        wordsMatchScore = wordsMatchScore * 1.3
+    
+    if skillsMatchScore >= 1:
+        skillsMatchScore = 0.1
+    else: 
+        skillsMatchScore = skillsMatchScore * 1.3
+
+    totalScore = skillsMatchScore + wordsMatchScore
+
+    if totalScore >= 1:
+        totalScore = 0.85
+
+    print('total', totalScore)
     return round(totalScore * 100)
 
-def finalArrangeData(resumeData, fileName):
+def finalArrangeData(resumeData):
     data = {}
     data["totalScore"] = resumeData["matchScore"]
     data["scores"] = resumeData["scores"]
-    data["ats"] = {
-        "resumeSkillsMissing" : resumeData["scores"]["skills"]["not-exists"],
-        "educationMatch" : {"required": resumeData["meta"]["educationRequirements"], "match": False},
-        "headings" : {"educationHeading" : resumeData["meta"]["educationHeading"], "workExperienceHeading" : resumeData["meta"]["workExperienceHeading"]},
-        "dateFormatting" : True
-    }
-    if fileName != None:
-        if fileName.split(".")[-1] in ["pdf", "docx"]:
-            noSpecialCharName = True
-            for i in ["-", "@", "!", "$", "^", "&", "*"]:
-                if i in fileName:
-                    noSpecialCharName = False
-            data["ats"]["fileFormat"] = {
-                "format" : fileName.split(".")[-1],
-                "noSpecialCharName" : noSpecialCharName,
-                "nameReadable" : True
-            }
-    data["recruiterFindings"] = {
-        "length" : {"current" : resumeData["meta"]["length"], "allowed" : 1000},
-        "measureableResults" : None,
-        "wordsToAvoid" : None,
-        "jobLevelMatch" : True
-    }
     data["skillsData"] = resumeData["skillsData"]
 
     return data
-
-def calcAtsScore(resumeData, fileName, skills):
-    points = {}
-    points["skills"] = 1 if skills["not-exists"] == 0 else 0
-
-    if ("experience" in resumeData) and (resumeData["experience"] != None):
-        points["experience"] = 1 if len(resumeData["experience"]) > 0 else 0
-    else:
-        points["experience"] = 0
-
-    if ("email" in resumeData) and (resumeData["email"] != None):
-        points["email"] = 1
-    else:
-        points["email"] = 0
-
-    if ("mobile_number" in resumeData) and (resumeData["mobile_number"] != None):
-        points["mobile_number"] = 1
-    else:
-        points["mobile_number"] = 0
-
-    if ("name" in resumeData) and (resumeData["name"] != None):
-        points["name"] = 1
-    else:
-        points["name"] = 0
-        
-    if resumeData["meta"]["educationRequirements"]:
-        if resumeData["meta"]["educationHeading"]:
-            points["educationReq"] = 1
-    else:
-        points["educationReq"] = 1
-    points["educationHeading"] = 1 if resumeData["meta"]["educationHeading"] else 0
-    points["workHeading"] = 1 if resumeData["meta"]["workExperienceHeading"] else 0
-    if fileName != None:
-        if fileName.split(".")[-1] in ["pdf", "docx"]:
-            points["filePoint"] = 1
-            points["fileNamePoint"] = 1
-            for i in ["-", "@", "!", "$", "^", "&", "*"]:
-                if i in fileName:
-                    points["fileNamePoint"] = 0
-            if points["fileNamePoint"] == 1:
-                points["readAble"] = 1
-
-    totalScore = 0
-    totalItems = len(points.keys())
-    for val in points.values():
-        totalScore += val
-    p = {
-        "exists": totalScore,
-        "not-exists": totalItems - totalScore,
-        "total": totalItems
-    }
-    return p
-
-def checkRecruiterScore(resumeData):
-    points = {}
-    points["wordCount"] = 1 if resumeData["meta"]["length"] < 1000 else 0
-    points["measureableResults"] = 1
-    points["avoidWords"] = 0
-    points["jobLevel"] = 1
-    i, total = 0, 0
-    for val in points.values():
-        total += val
-    p = {
-        "exists": total,
-        "not-exists": 4 - total,
-        "total": 4
-    }
-    return p
-
 
 def parseSkills(skills):
     skillsFinal = []
@@ -309,21 +258,16 @@ def countWords(skills, ResumeText, JobText):
 def cleanString(stringer): 
     cleaned_string = ''.join(c for c in stringer if valid_xml_char_ordinal(c))
 
-    tokens = word_tokenize(stringer)
-
-    # convert to lower case
-    tokens = [w.lower() for w in tokens]
+    tokens = word_tokenize(cleaned_string)
 
     # remove punctuation from each word
     table = str.maketrans(string.punctuation, ' ' * len(string.punctuation))
     stripped = [w.translate(table) for w in tokens]
 
-    # remove remaining tokens that are not alphabetic
-    words = [word for word in stripped if word.isalpha()]
 
     # filter out stop words    
     stop_words = set(stopwords.words('english'))
-    words = [w for w in words if not w in stop_words]
+    words = [w for w in stripped if not w in stop_words]
     words = ' '.join(words)
 
     return str(words)
