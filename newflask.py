@@ -52,7 +52,7 @@ async def form_example():
         #parse and math the resume with the job description
         data = parseAndMatchResume("resume.docx","job_description.docx", wordMatch)
 
-        return data
+        return str(data)
 
 def readFromPDF(file): 
     text = ''
@@ -134,34 +134,31 @@ def calculateMatch(score):
     skillsMatchScore = score["skills"]["exists"] / score["skills"]["total"] * 1.3
     wordsMatchScore = score["wordMatch"] / 100
 
-    print('skills', skillsMatchScore)
-    print('words', wordsMatchScore)
     # if copy pasted the job description
-    if wordsMatchScore >= 1:
+    if(wordsMatchScore >= 1):
         wordsMatchScore = 0.1
     else: 
         wordsMatchScore = wordsMatchScore * 1.3
     
-    if skillsMatchScore >= 1:
+    if(skillsMatchScore >= 1):
         skillsMatchScore = 0.1
     else: 
         skillsMatchScore = skillsMatchScore * 1.3
 
     totalScore = skillsMatchScore + wordsMatchScore
 
-    if totalScore >= 1:
-        totalScore = 0.85
+    if(totalScore >= 0.95):
+        totalScore = 0.95
 
-    print('total', totalScore)
     return round(totalScore * 100)
 
 def finalArrangeData(resumeData):
     data = {}
     data["totalScore"] = resumeData["matchScore"]
-    data["scores"] = resumeData["scores"]
-    data["skillsData"] = resumeData["skillsData"]
+    # data["scores"] = resumeData["scores"]
+    # data["skillsData"] = resumeData["skillsData"]
 
-    return data
+    return data["totalScore"]
 
 def parseSkills(skills):
     skillsFinal = []
